@@ -1,0 +1,6 @@
+{
+  "name": "K&SON'S COLLECTION'S",
+  "description": "Modern intimate apparel, breathable everyday innerwear, shapewear, and loungewear storefront for K&SON'S COLLECTION'S.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

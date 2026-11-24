@@ -1,0 +1,160 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && request.auth.uid == 'cpor2Dw8yOf5d0FBMtnbkmtvF7I3';
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function isValidCategory(data) {
+      return data.keys().hasAll(['name', 'subcategories', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly(['name', 'image', 'subcategories', 'sortOrder', 'createdAt', 'updatedAt'])
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 80
+        && data.subcategories is list && data.subcategories.size() <= 30
+        && (!('image' in data) || (data.image is string && data.image.size() <= 600))
+        && (!('sortOrder' in data) || data.sortOrder is number)
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidProduct(data) {
+      return data.keys().hasAll(['name', 'category', 'pricePkr', 'image', 'availability', 'createdAt', 'updatedAt'])
+        && data.keys().hasOnly([
+          'name', 'category', 'subcategory', 'series', 'pricePkr', 'compareAtPkr',
+          'image', 'gallery', 'fabric', 'description', 'highlights',
+          'careInstructions', 'sizes', 'colors', 'availability', 'featured',
+          'createdAt', 'updatedAt'
+        ])
+        && data.name is string && data.name.size() >= 1 && data.name.size() <= 120
+        && data.category is string && data.category.size() >= 1 && data.category.size() <= 80
+        && (!('subcategory' in data) || (data.subcategory is string && data.subcategory.size() <= 80))
+        && (!('series' in data) || (data.series is string && data.series.size() <= 80))
+        && data.pricePkr is number && data.pricePkr >= 1 && data.pricePkr <= 1000000
+        && (!('compareAtPkr' in data) || data.compareAtPkr == null || (data.compareAtPkr is number && data.compareAtPkr >= 0))
+        && data.image is string && data.image.size() >= 1 && data.image.size() <= 600
+        && (!('gallery' in data) || (data.gallery is list && data.gallery.size() <= 100))
+        && (!('fabric' in data) || (data.fabric is string && data.fabric.size() <= 160))
+        && (!('description' in data) || (data.description is string && data.description.size() <= 1500))
+        && (!('highlights' in data) || (data.highlights is list && data.highlights.size() <= 10))
+        && (!('careInstructions' in data) || (data.careInstructions is list && data.careInstructions.size() <= 10))
+        && (!('sizes' in data) || (data.sizes is list && data.sizes.size() <= 20))
+        && (!('colors' in data) || (data.colors is list && data.colors.size() <= 15))
+        && data.availability in ['In Stock', 'New Arrival', 'Best Seller', 'Out of Stock']
+        && (!('featured' in data) || data.featured is bool)
+        && data.createdAt is string && data.createdAt.size() <= 64
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    function isValidOrderCreate(data) {
+      return data.keys().hasAll([
+          'orderId', 'customerName', 'phone', 'city', 'address',
+          'paymentMethod', 'items', 'subtotalPkr', 'deliveryPkr',
+          'totalPkr', 'status', 'createdAt'
+        ])
+        && data.keys().hasOnly([
+          'orderId', 'customerName', 'phone', 'city', 'address', 'notes',
+          'paymentMethod', 'items', 'subtotalPkr', 'deliveryPkr',
+          'totalPkr', 'status', 'estimatedWindow', 'createdAt', 'updatedAt'
+        ])
+        && data.orderId is string && data.orderId.size() >= 3 && data.orderId.size() <= 32
+        && data.customerName is string && data.customerName.size() >= 2 && data.customerName.size() <= 100
+        && data.phone is string && data.phone.size() >= 7 && data.phone.size() <= 30
+        && data.city is string && data.city.size() >= 2 && data.city.size() <= 80
+        && data.address is string && data.address.size() >= 4 && data.address.size() <= 400
+        && (!('notes' in data) || (data.notes is string && data.notes.size() <= 400))
+        && data.paymentMethod in ['Cash on Delivery', 'Easypaisa', 'JazzCash', 'Online Bank Transfer']
+        && data.items is list && data.items.size() >= 1 && data.items.size() <= 40
+        && data.subtotalPkr is number && data.subtotalPkr >= 1 && data.subtotalPkr <= 10000000
+        && data.deliveryPkr is number && data.deliveryPkr >= 0 && data.deliveryPkr <= 10000
+        && data.totalPkr is number && data.totalPkr >= 1 && data.totalPkr <= 10000000
+        && data.status == 'Confirmed'
+        && (!('estimatedWindow' in data) || (data.estimatedWindow is string && data.estimatedWindow.size() <= 120))
+        && data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
+    function isValidOrderUpdate(data) {
+      return data.keys().hasAll([
+          'orderId', 'customerName', 'phone', 'city', 'address',
+          'paymentMethod', 'items', 'subtotalPkr', 'deliveryPkr',
+          'totalPkr', 'status', 'createdAt'
+        ])
+        && data.status in ['Confirmed', 'Discreetly Packed', 'Out for Delivery', 'Delivered', 'Cancelled']
+        && data.orderId == resource.data.orderId
+        && data.createdAt == resource.data.createdAt;
+    }
+
+    function isValidStoreSettings(data) {
+      return data.keys().hasAll([
+          'brandName', 'shortMark', 'domain', 'email', 'primaryPhone', 'secondaryPhone',
+          'codEnabled', 'easypaisaEnabled', 'jazzcashEnabled', 'bankEnabled', 'updatedAt'
+        ])
+        && data.keys().hasOnly([
+          'brandName', 'shortMark', 'domain', 'email', 'primaryPhone', 'secondaryPhone',
+          'instagramUrl', 'handle', 'tiktokUrl', 'tiktokHandle', 'facebookUrl',
+          'codEnabled', 'easypaisaEnabled', 'easypaisaAccountTitle', 'easypaisaNumber',
+          'jazzcashEnabled', 'jazzcashAccountTitle', 'jazzcashNumber',
+          'bankEnabled', 'bankName', 'bankAccountTitle', 'bankAccountNumber', 'bankIban',
+          'updatedAt'
+        ])
+        && data.brandName is string && data.brandName.size() >= 1 && data.brandName.size() <= 100
+        && data.shortMark is string && data.shortMark.size() >= 1 && data.shortMark.size() <= 40
+        && data.domain is string && data.domain.size() <= 120
+        && data.email is string && data.email.size() <= 120
+        && data.primaryPhone is string && data.primaryPhone.size() <= 40
+        && data.secondaryPhone is string && data.secondaryPhone.size() <= 40
+        && data.codEnabled is bool
+        && data.easypaisaEnabled is bool
+        && data.jazzcashEnabled is bool
+        && data.bankEnabled is bool
+        && data.updatedAt is string && data.updatedAt.size() <= 64;
+    }
+
+    match /test/{docId} {
+      allow get: if docId == 'connection';
+    }
+
+    match /settings/{docId} {
+      allow get: if docId == 'store';
+      allow create, update: if isAdmin() && docId == 'store' && isValidStoreSettings(incoming());
+    }
+
+    match /categories/{categoryId} {
+      allow get, list: if true;
+      allow create: if isAdmin() && isValidId(categoryId) && isValidCategory(incoming());
+      allow update: if isAdmin() && isValidId(categoryId) && isValidCategory(incoming());
+      allow delete: if isAdmin() && isValidId(categoryId);
+    }
+
+    match /products/{productId} {
+      allow get, list: if true;
+      allow create: if isAdmin() && isValidId(productId) && isValidProduct(incoming());
+      allow update: if isAdmin() && isValidId(productId) && isValidProduct(incoming());
+      allow delete: if isAdmin() && isValidId(productId);
+    }
+
+    match /orders/{orderId} {
+      allow get: if isAdmin() || isValidId(orderId);
+      allow list: if isAdmin();
+      allow create: if isValidId(orderId) && isValidOrderCreate(incoming());
+      allow update: if isAdmin() && isValidId(orderId) && isValidOrderUpdate(incoming());
+      allow delete: if isAdmin() && isValidId(orderId);
+    }
+  }
+}

@@ -1,0 +1,61 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@theme {
+  --font-display: "Outfit", ui-sans-serif, system-ui, sans-serif;
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+}
+
+@layer base {
+  html {
+    scroll-behavior: smooth;
+    font-family: var(--font-sans);
+  }
+
+  h1, h2, h3, h4 {
+    font-family: var(--font-display);
+    text-wrap: balance;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+  }
+}
+
+.brand-gradient {
+  background: linear-gradient(135deg, #118A9B 0%, #23B5C8 60%, #58D3E3 100%);
+}
+
+.brand-soft-bg {
+  background: linear-gradient(135deg, rgba(35, 181, 200, 0.14) 0%, rgba(178, 232, 239, 0.25) 100%);
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Clean Logo Blue Scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: #EAF5F7;
+}
+
+::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, #23B5C8 0%, #118A9B 100%);
+  border-radius: 9999px;
+  border: 2px solid #EAF5F7;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, #189FB0 0%, #0D7280 100%);
+}
