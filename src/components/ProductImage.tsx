@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Sparkles } from 'lucide-react';
 
 interface ProductImageProps {
@@ -13,6 +13,10 @@ export const ProductImage: React.FC<ProductImageProps> = ({
   className = '',
 }) => {
   const [hasError, setHasError] = useState(false);
+
+  useEffect(() => {
+    setHasError(false);
+  }, [src]);
 
   if (hasError || !src) {
     return (

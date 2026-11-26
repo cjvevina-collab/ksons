@@ -18,14 +18,11 @@ import {
 } from 'lucide-react';
 import { collection, doc, onSnapshot, setDoc } from 'firebase/firestore';
 import {
+  BANNER_IMAGES,
   CategoryItem,
-  DEFAULT_CATEGORIES,
-  DEFAULT_PRODUCTS,
   DEFAULT_STORE_SETTINGS,
   FAQS,
-  INITIAL_SAMPLE_ORDERS,
   OrderRecord,
-  PRODUCT_IMAGES,
   Product,
   QUALITY_PARTNERS,
   StoreSettings,
@@ -85,7 +82,7 @@ export default function App() {
   const initialRoute = parseHashRoute();
   const [currentPage, setCurrentPage] = useState<AppPage>(initialRoute.page);
   const [activeProductId, setActiveProductId] = useState<string>(
-    initialRoute.productId || DEFAULT_PRODUCTS[0].id
+    initialRoute.productId || ''
   );
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [selectedSubcategory, setSelectedSubcategory] = useState<string>('');
@@ -93,8 +90,9 @@ export default function App() {
   const [sortBy, setSortBy] = useState<SortOption>('featured');
   const [openFaqIdx, setOpenFaqIdx] = useState<number>(0);
 
-  const [categories, setCategories] = useState<CategoryItem[]>(DEFAULT_CATEGORIES);
-  const [products, setProducts] = useState<Product[]>(DEFAULT_PRODUCTS);
+  const [categories, setCategories] = useState<CategoryItem[]>([]);
+  const [products, setProducts] = useState<Product[]>([]);
+  const [catalogLoaded, setCatalogLoaded] = useState(false);
   const [storeSettings, setStoreSettings] = useState<StoreSettings>(
     DEFAULT_STORE_SETTINGS
   );
@@ -122,13 +120,9 @@ export default function App() {
   const [orders, setOrders] = useState<OrderRecord[]>(() => {
     try {
       const raw = localStorage.getItem(ORDERS_STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as OrderRecord[];
-        return parsed.length > 0 ? parsed : INITIAL_SAMPLE_ORDERS;
-      }
-      return INITIAL_SAMPLE_ORDERS;
+      return raw ? (JSON.parse(raw) as OrderRecord[]) : [];
     } catch {
-      return INITIAL_SAMPLE_ORDERS;
+      return [];
     }
   });
 
@@ -154,66 +148,70 @@ export default function App() {
     const unsubCategories = onSnapshot(
       collection(db, 'categories'),
       (snap) => {
-        if (!snap.empty) {
-          const loaded: CategoryItem[] = snap.docs.map((d) => {
-            const data = d.data() as Partial<CategoryItem>;
-            return {
-              id: d.id,
-              name: data.name || 'Collection',
-              image: data.image || PRODUCT_IMAGES[0],
-              subcategories: Array.isArray(data.subcategories) ? data.subcategories : [],
-              sortOrder: typeof data.sortOrder === 'number' ? data.sortOrder : 99,
-            };
-          });
-          loaded.sort((a, b) => (a.sortOrder ?? 99) - (b.sortOrder ?? 99));
-          setCategories(loaded);
-        }
+        const loaded: CategoryItem[] = snap.docs.map((d) => {
+          const data = d.data() as Partial<CategoryItem>;
+          return {
+            id: d.id,
+            name: data.name || 'Collection',
+            image: data.image || BANNER_IMAGES.everyday,
+            subcategories: Array.isArray(data.subcategories) ? data.subcategories : [],
+            sortOrder: typeof data.sortOrder === 'number' ? data.sortOrder : 99,
+          };
+        });
+        loaded.sort((a, b) => (a.sortOrder ?? 99) - (b.sortOrder ?? 99));
+        setCategories(loaded);
       },
       () => {
-        // Keep starter categories seamlessly if Firestore rules are pending publish
+        setCategories([]);
       }
     );
 
     const unsubProducts = onSnapshot(
       collection(db, 'products'),
       (snap) => {
-        if (!snap.empty) {
-          const loaded: Product[] = snap.docs.map((d) => {
-            const data = d.data() as Partial<Product>;
-            const primaryImg = data.image || PRODUCT_IMAGES[0];
-            return {
-              id: d.id,
-              name: data.name || 'Product',
-              category: data.category || 'Everyday Innerwear',
-              subcategory: data.subcategory || undefined,
-              series: data.series || undefined,
-              pricePkr: typeof data.pricePkr === 'number' ? data.pricePkr : 0,
-              compareAtPkr:
-                typeof data.compareAtPkr === 'number' && data.compareAtPkr > 0
-                  ? data.compareAtPkr
-                  : undefined,
-              image: primaryImg,
-              gallery:
-                Array.isArray(data.gallery) && data.gallery.length > 0
-                  ? data.gallery
-                  : [primaryImg],
-              fabric: data.fabric || '',
-              description: data.description || '',
-              highlights: Array.isArray(data.highlights) ? data.highlights : [],
-              careInstructions: Array.isArray(data.careInstructions)
-                ? data.careInstructions
+        const loaded: Product[] = snap.docs.map((d) => {
+          const data = d.data() as Partial<Product>;
+          const primaryImg = data.image || '';
+          return {
+            id: d.id,
+            name: data.name || 'Product',
+            category: data.category || 'Collection',
+            subcategory: data.subcategory || undefined,
+            series: data.series || undefined,
+            pricePkr: typeof data.pricePkr === 'number' ? data.pricePkr : 0,
+            compareAtPkr:
+              typeof data.compareAtPkr === 'number' && data.compareAtPkr > 0
+                ? data.compareAtPkr
+                : undefined,
+            image: primaryImg,
+            gallery:
+              Array.isArray(data.gallery) && data.gallery.length > 0
+                ? data.gallery
+                : primaryImg
+                ? [primaryImg]
                 : [],
-              sizes: Array.isArray(data.sizes) ? data.sizes : [],
-              colors: Array.isArray(data.colors) ? data.colors : [],
-              availability: data.availability || 'In Stock',
-              featured: Boolean(data.featured),
-            };
-          });
-          setProducts(loaded);
-        }
+            fabric: data.fabric || '',
+            description: data.description || '',
+            highlights: Array.isArray(data.highlights) ? data.highlights : [],
+            careInstructions: Array.isArray(data.careInstructions)
+              ? data.careInstructions
+              : [],
+            sizes: Array.isArray(data.sizes) ? data.sizes : [],
+            colors: Array.isArray(data.colors) ? data.colors : [],
+            availability: data.availability || 'In Stock',
+            featured: Boolean(data.featured),
+            createdAt: typeof data.createdAt === 'string' ? data.createdAt : undefined,
+          };
+        });
+        loaded.sort((a, b) =>
+          (b.createdAt || '').localeCompare(a.createdAt || '')
+        );
+        setProducts(loaded);
+        setCatalogLoaded(true);
       },
       () => {
-        // Keep starter products seamlessly if Firestore rules are pending publish
+        setProducts([]);
+        setCatalogLoaded(true);
       }
     );
 
@@ -314,7 +312,7 @@ export default function App() {
   }, [products, selectedCategory, selectedSubcategory, searchQuery, sortBy]);
 
   const activeProduct = useMemo(
-    () => products.find((p) => p.id === activeProductId) || products[0] || DEFAULT_PRODUCTS[0],
+    () => products.find((p) => p.id === activeProductId) || products[0] || null,
     [products, activeProductId]
   );
 
@@ -521,32 +519,43 @@ export default function App() {
                   </div>
                 </div>
 
-                <div
-                  ref={categorySliderRef}
-                  className="no-scrollbar mt-6 flex snap-x snap-mandatory gap-4 overflow-x-auto pb-2"
-                >
-                  {categories.map((cat) => (
-                    <button
-                      key={cat.id}
-                      type="button"
-                      onClick={() => openCategoryInShop(cat.name)}
-                      className="group w-[170px] shrink-0 snap-start overflow-hidden rounded-2xl border border-[#DCEBEF] bg-white text-left transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md sm:w-[205px] cursor-pointer"
-                    >
-                      <div className="aspect-square w-full overflow-hidden bg-[#F5FAFB]">
-                        <ProductImage
-                          src={cat.image}
-                          alt={cat.name}
-                          className="h-full w-full transition-transform duration-300 group-hover:scale-105"
-                        />
-                      </div>
-                      <div className="p-3.5">
-                        <p className="font-display text-sm font-bold text-[#0E171D] group-hover:text-[#118A9B]">
-                          {cat.name}
-                        </p>
-                      </div>
-                    </button>
-                  ))}
-                </div>
+                {categories.length === 0 ? (
+                  <div className="mt-6 rounded-2xl border border-[#DCEBEF] bg-white p-8 text-center">
+                    <p className="font-display text-sm font-bold text-[#0E171D]">
+                      {catalogLoaded ? 'No categories published yet' : 'Loading categories...'}
+                    </p>
+                    <p className="mt-1 text-xs text-[#546A76]">
+                      Collections added from the Admin Panel will appear here automatically.
+                    </p>
+                  </div>
+                ) : (
+                  <div
+                    ref={categorySliderRef}
+                    className="no-scrollbar mt-6 flex snap-x snap-mandatory gap-4 overflow-x-auto pb-2"
+                  >
+                    {categories.map((cat) => (
+                      <button
+                        key={cat.id}
+                        type="button"
+                        onClick={() => openCategoryInShop(cat.name)}
+                        className="group w-[170px] shrink-0 snap-start overflow-hidden rounded-2xl border border-[#DCEBEF] bg-white text-left transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md sm:w-[205px] cursor-pointer"
+                      >
+                        <div className="aspect-square w-full overflow-hidden bg-[#F5FAFB]">
+                          <ProductImage
+                            src={cat.image}
+                            alt={cat.name}
+                            className="h-full w-full transition-transform duration-300 group-hover:scale-105"
+                          />
+                        </div>
+                        <div className="p-3.5">
+                          <p className="font-display text-sm font-bold text-[#0E171D] group-hover:text-[#118A9B]">
+                            {cat.name}
+                          </p>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </section>
 
@@ -583,34 +592,47 @@ export default function App() {
                   </div>
                 </div>
 
-                <div
-                  ref={productSliderRef}
-                  className="no-scrollbar mt-6 flex snap-x snap-mandatory gap-5 overflow-x-auto pb-2"
-                >
-                  {featuredProducts.map((product) => (
+                {featuredProducts.length === 0 ? (
+                  <div className="mt-6 rounded-2xl border border-[#DCEBEF] bg-white p-8 text-center">
+                    <p className="font-display text-sm font-bold text-[#0E171D]">
+                      {catalogLoaded ? 'No products published yet' : 'Loading products...'}
+                    </p>
+                    <p className="mt-1 text-xs text-[#546A76]">
+                      Products published from your Admin Dashboard will showcase here immediately.
+                    </p>
+                  </div>
+                ) : (
+                  <>
                     <div
-                      key={product.id}
-                      className="w-[265px] shrink-0 snap-start sm:w-[300px]"
+                      ref={productSliderRef}
+                      className="no-scrollbar mt-6 flex snap-x snap-mandatory gap-5 overflow-x-auto pb-2"
                     >
-                      <ProductCard
-                        product={product}
-                        onOpenProduct={openSingleProduct}
-                        onAddToBag={handleAddToBag}
-                      />
+                      {featuredProducts.map((product) => (
+                        <div
+                          key={product.id}
+                          className="w-[265px] shrink-0 snap-start sm:w-[300px]"
+                        >
+                          <ProductCard
+                            product={product}
+                            onOpenProduct={openSingleProduct}
+                            onAddToBag={handleAddToBag}
+                          />
+                        </div>
+                      ))}
                     </div>
-                  ))}
-                </div>
 
-                <div className="mt-6 flex justify-center">
-                  <button
-                    type="button"
-                    onClick={() => openCategoryInShop('All')}
-                    className="inline-flex min-h-[42px] items-center gap-2 rounded-lg bg-gradient-to-r from-[#118A9B] to-[#23B5C8] px-6 py-2 font-display text-sm font-semibold text-white transition-all hover:from-[#0E7483] hover:to-[#179EB0] cursor-pointer"
-                  >
-                    <span>View All {products.length} Products</span>
-                    <ArrowRight className="h-4 w-4" aria-hidden="true" />
-                  </button>
-                </div>
+                    <div className="mt-6 flex justify-center">
+                      <button
+                        type="button"
+                        onClick={() => openCategoryInShop('All')}
+                        className="inline-flex min-h-[42px] items-center gap-2 rounded-lg bg-gradient-to-r from-[#118A9B] to-[#23B5C8] px-6 py-2 font-display text-sm font-semibold text-white transition-all hover:from-[#0E7483] hover:to-[#179EB0] cursor-pointer"
+                      >
+                        <span>View All {products.length} Products</span>
+                        <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                      </button>
+                    </div>
+                  </>
+                )}
               </div>
             </section>
 
@@ -618,7 +640,7 @@ export default function App() {
             <section className="relative w-full overflow-hidden bg-[#09181D]">
               <div className="relative min-h-[240px] w-full sm:min-h-[280px]">
                 <ProductImage
-                  src={PRODUCT_IMAGES[3]}
+                  src={BANNER_IMAGES.packaging}
                   alt="K&SON'S Wholesale and Retail"
                   className="absolute inset-0 h-full w-full object-cover"
                 />
@@ -791,7 +813,7 @@ export default function App() {
             <section className="relative w-full overflow-hidden bg-[#09181D]">
               <div className="relative min-h-[220px] w-full sm:min-h-[260px]">
                 <ProductImage
-                  src={PRODUCT_IMAGES[27]}
+                  src={BANNER_IMAGES.bridal}
                   alt="Bridal Satin & Everyday Shapewear"
                   className="absolute inset-0 h-full w-full object-cover"
                 />
@@ -807,10 +829,10 @@ export default function App() {
                     <div className="mt-5 flex flex-wrap gap-3">
                       <button
                         type="button"
-                        onClick={() => openCategoryInShop('Bridal & Silk')}
+                        onClick={() => openCategoryInShop('All')}
                         className="min-h-[42px] rounded-lg bg-gradient-to-r from-[#118A9B] to-[#23B5C8] px-5 py-2 font-display text-sm font-semibold text-white cursor-pointer"
                       >
-                        Shop Bridal &amp; Silk
+                        Shop Collection
                       </button>
                     </div>
                   </div>
@@ -915,7 +937,7 @@ export default function App() {
             <section className="relative w-full overflow-hidden bg-[#09181D]">
               <div className="relative min-h-[200px] w-full sm:min-h-[240px]">
                 <ProductImage
-                  src={PRODUCT_IMAGES[5]}
+                  src={BANNER_IMAGES.winter}
                   alt="Shop K&SON'S COLLECTION'S"
                   className="absolute inset-0 h-full w-full object-cover"
                 />
@@ -1056,19 +1078,38 @@ export default function App() {
               {filteredProducts.length === 0 ? (
                 <div className="mt-10 rounded-2xl border border-[#DCEBEF] bg-white p-10 text-center">
                   <p className="font-display text-base font-semibold text-[#0E171D]">
-                    No products matched your search
+                    {products.length === 0
+                      ? catalogLoaded
+                        ? 'No products have been added yet'
+                        : 'Loading store catalog...'
+                      : 'No products matched your search'}
                   </p>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedCategory('All');
-                      setSelectedSubcategory('');
-                      setSearchQuery('');
-                    }}
-                    className="mt-4 min-h-[40px] rounded-lg bg-gradient-to-r from-[#118A9B] to-[#23B5C8] px-5 py-2 text-sm font-semibold text-white cursor-pointer"
-                  >
-                    Reset Filters
-                  </button>
+                  <p className="mt-1.5 text-xs text-[#546A76]">
+                    {products.length === 0
+                      ? 'Add your categories and products from the Admin Panel to display them here.'
+                      : 'Try clearing your search or choosing another category.'}
+                  </p>
+                  {products.length > 0 ? (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedCategory('All');
+                        setSelectedSubcategory('');
+                        setSearchQuery('');
+                      }}
+                      className="mt-4 min-h-[40px] rounded-lg bg-gradient-to-r from-[#118A9B] to-[#23B5C8] px-5 py-2 text-sm font-semibold text-white cursor-pointer"
+                    >
+                      Reset Filters
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => navigateTo('home')}
+                      className="mt-4 min-h-[40px] rounded-lg bg-gradient-to-r from-[#118A9B] to-[#23B5C8] px-5 py-2 text-sm font-semibold text-white cursor-pointer"
+                    >
+                      Back to Home
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div className="mt-7 grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
@@ -1098,14 +1139,34 @@ export default function App() {
 
         {/* SINGLE PRODUCT PAGE */}
         {currentPage === 'product' && (
-          <SingleProductPage
-            product={activeProduct}
-            allProducts={products}
-            storeSettings={storeSettings}
-            onBackToShop={(cat) => openCategoryInShop(cat || 'All')}
-            onOpenProduct={openSingleProduct}
-            onAddToBag={handleAddToBag}
-          />
+          activeProduct ? (
+            <SingleProductPage
+              product={activeProduct}
+              allProducts={products}
+              storeSettings={storeSettings}
+              onBackToShop={(cat) => openCategoryInShop(cat || 'All')}
+              onOpenProduct={openSingleProduct}
+              onAddToBag={handleAddToBag}
+            />
+          ) : (
+            <div className="mx-auto max-w-2xl px-4 py-20 text-center">
+              <div className="rounded-3xl border border-[#DCEBEF] bg-white p-10">
+                <h1 className="font-display text-2xl font-extrabold text-[#0E171D] uppercase">
+                  Product Unavailable
+                </h1>
+                <p className="mt-2 text-sm text-[#546A76]">
+                  This product is currently unavailable or has been removed from the catalog.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => openCategoryInShop('All')}
+                  className="mt-6 min-h-[42px] rounded-lg bg-gradient-to-r from-[#118A9B] to-[#23B5C8] px-6 py-2 font-display text-sm font-semibold text-white cursor-pointer"
+                >
+                  Return to Shop
+                </button>
+              </div>
+            </div>
+          )
         )}
 
         {/* EASY CHECKOUT PAGE */}

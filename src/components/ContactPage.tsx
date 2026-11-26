@@ -10,7 +10,7 @@ import {
   Video,
 } from 'lucide-react';
 import {
-  PRODUCT_IMAGES,
+  BANNER_IMAGES,
   StoreSettings,
   toWhatsAppDigits,
 } from '../data/catalog';
@@ -45,7 +45,7 @@ export const ContactPage: React.FC<ContactPageProps> = ({ storeSettings }) => {
       <section className="relative w-full overflow-hidden bg-[#09181D]">
         <div className="relative min-h-[200px] w-full sm:min-h-[240px]">
           <ProductImage
-            src={PRODUCT_IMAGES[18]}
+            src={BANNER_IMAGES.everyday}
             alt={`Contact ${storeSettings.brandName}`}
             className="absolute inset-0 h-full w-full object-cover"
           />

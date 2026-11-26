@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { doc, getDoc } from 'firebase/firestore';
 import { PackageSearch, ShieldCheck } from 'lucide-react';
-import { OrderRecord, PRODUCT_IMAGES, StoreSettings, formatPkr } from '../data/catalog';
+import { BANNER_IMAGES, OrderRecord, StoreSettings, formatPkr } from '../data/catalog';
 import { OperationType, db, handleFirestoreError } from '../lib/firebase';
 import { ProductImage } from './ProductImage';
 
@@ -14,11 +14,9 @@ export const TrackOrderPage: React.FC<TrackOrderPageProps> = ({
   orders,
   storeSettings,
 }) => {
-  const [lookupId, setLookupId] = useState('KS-2035');
-  const [searchedId, setSearchedId] = useState('KS-2035');
-  const [matchedOrder, setMatchedOrder] = useState<OrderRecord | null>(
-    () => orders.find((o) => o.orderId.toUpperCase() === 'KS-2035') || null
-  );
+  const [lookupId, setLookupId] = useState('');
+  const [searchedId, setSearchedId] = useState('');
+  const [matchedOrder, setMatchedOrder] = useState<OrderRecord | null>(null);
   const [searching, setSearching] = useState(false);
 
   const runSearch = async (targetId: string) => {
@@ -76,8 +74,8 @@ export const TrackOrderPage: React.FC<TrackOrderPageProps> = ({
       <section className="relative w-full overflow-hidden bg-[#09181D]">
         <div className="relative min-h-[200px] w-full sm:min-h-[240px]">
           <ProductImage
-            src={PRODUCT_IMAGES[3]}
-            alt="Track your K&SON'S order"
+            src={BANNER_IMAGES.packaging}
+            alt="Track your order"
             className="absolute inset-0 h-full w-full object-cover"
           />
           <div className="absolute inset-0 bg-gradient-to-r from-[#07151A]/90 via-[#07151A]/65 to-transparent" />
@@ -105,18 +103,7 @@ export const TrackOrderPage: React.FC<TrackOrderPageProps> = ({
             </div>
 
             <p className="mt-3 text-sm text-[#425561]">
-              Try sample order{' '}
-              <button
-                type="button"
-                onClick={() => {
-                  setLookupId('KS-2035');
-                  void runSearch('KS-2035');
-                }}
-                className="font-display font-bold text-[#118A9B] underline underline-offset-2 cursor-pointer"
-              >
-                KS-2035
-              </button>{' '}
-              or enter an Order ID you placed in checkout.
+              Enter your Order ID (for example <span className="font-semibold text-[#0E171D]">KS-1234</span>) from Easy Checkout to check live parcel progress.
             </p>
 
             <form onSubmit={handleSubmit} className="mt-5 flex flex-col gap-3 sm:flex-row">
@@ -175,9 +162,13 @@ export const TrackOrderPage: React.FC<TrackOrderPageProps> = ({
                   </div>
                   <p className="text-xs text-[#425561]">{matchedOrder.estimatedWindow}</p>
                 </div>
-              ) : (
+              ) : searchedId ? (
                 <p className="text-sm text-[#546A76]">
                   No parcel found for <strong className="text-[#0E171D]">{searchedId}</strong>. Please verify your Order ID or reach us on WhatsApp at {storeSettings.primaryPhone}.
+                </p>
+              ) : (
+                <p className="text-sm text-[#546A76]">
+                  Your parcel details and live order status will appear here once you enter an Order ID.
                 </p>
               )}
             </div>

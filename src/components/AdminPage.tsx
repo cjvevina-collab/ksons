@@ -17,8 +17,10 @@ import {
 } from 'firebase/firestore';
 import {
   Check,
+  Copy,
   FolderTree,
   ImagePlus,
+  KeyRound,
   Lock,
   LogOut,
   Package,
@@ -91,7 +93,9 @@ function slugifyId(text: string): string {
   return `${base || 'item'}-${Date.now().toString(36)}`;
 }
 
-async function uploadToImgBB(file: File): Promise<string> {
+const IMGBB_STORAGE_KEY = 'ksons_imgbb_key';
+
+async function uploadToImgBB(file: File, browserImgbbKey: string): Promise<string> {
   const user = auth.currentUser;
   if (!user) throw new Error('Please sign in first.');
   const token = await user.getIdToken();
@@ -103,23 +107,83 @@ async function uploadToImgBB(file: File): Promise<string> {
     reader.readAsDataURL(file);
   });
 
-  const resp = await fetch('/api/upload-image', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({
-      imageBase64: dataUrl,
-      name: file.name.replace(/\.[^.]+$/, ''),
-    }),
-  });
+  const cleanName = file.name.replace(/\.[^.]+$/, '').slice(0, 64);
+  const cleanedBase64 = dataUrl.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, '');
 
-  const payload = (await resp.json()) as { url?: string; error?: string };
-  if (!resp.ok || !payload.url) {
-    throw new Error(payload.error || 'Image upload failed.');
+  let serverError = '';
+  let canTryDirect = false;
+
+  try {
+    const resp = await fetch('/api/upload-image', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        imageBase64: dataUrl,
+        name: cleanName,
+      }),
+    });
+
+    const text = await resp.text();
+    let payload: { url?: string; error?: string } = {};
+    try {
+      payload = JSON.parse(text) as { url?: string; error?: string };
+    } catch {
+      canTryDirect = true;
+    }
+
+    if (resp.ok && payload.url) {
+      return payload.url;
+    }
+
+    if (resp.status === 503 || resp.status === 404 || resp.status === 405) {
+      canTryDirect = true;
+    }
+    serverError = payload.error || `Upload endpoint returned status ${resp.status}.`;
+  } catch {
+    canTryDirect = true;
+    serverError = 'Server upload endpoint unavailable.';
   }
-  return payload.url;
+
+  const trimmedBrowserKey = browserImgbbKey.trim();
+  if (canTryDirect && trimmedBrowserKey) {
+    const form = new URLSearchParams();
+    form.append('key', trimmedBrowserKey);
+    form.append('image', cleanedBase64);
+    if (cleanName) {
+      form.append('name', cleanName);
+    }
+
+    const directResp = await fetch('https://api.imgbb.com/1/upload', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: form.toString(),
+    });
+
+    const directResult = (await directResp.json()) as {
+      success?: boolean;
+      data?: { url?: string; display_url?: string };
+      error?: { message?: string };
+    };
+
+    if (!directResp.ok || !directResult.success || !directResult.data?.url) {
+      throw new Error(
+        directResult.error?.message || 'Direct ImgBB upload failed. Check your ImgBB API key.'
+      );
+    }
+
+    return directResult.data.display_url || directResult.data.url;
+  }
+
+  if (canTryDirect && !trimmedBrowserKey) {
+    throw new Error(
+      'Enter your ImgBB API key in the ImgBB Key box below (or set IMGBB_API_KEY in server secrets), or paste an image URL.'
+    );
+  }
+
+  throw new Error(serverError || 'Image upload failed.');
 }
 
 export const AdminPage: React.FC<AdminPageProps> = ({
@@ -144,17 +208,31 @@ export const AdminPage: React.FC<AdminPageProps> = ({
   const [settingsForm, setSettingsForm] = useState<StoreSettings>(storeSettings);
   const [savingSettings, setSavingSettings] = useState(false);
 
+  const [browserImgbbKey, setBrowserImgbbKey] = useState<string>(() => {
+    try {
+      return localStorage.getItem(IMGBB_STORAGE_KEY) || '';
+    } catch {
+      return '';
+    }
+  });
+  const [serverImgbbReady, setServerImgbbReady] = useState<boolean | null>(null);
+  const [showImgbbKeyBox, setShowImgbbKeyBox] = useState(false);
+
   // Category Form State
   const [editingCatId, setEditingCatId] = useState<string | null>(null);
+  const [editingCatCreatedAt, setEditingCatCreatedAt] = useState<string | null>(null);
+  const [editingCatSortOrder, setEditingCatSortOrder] = useState<number | null>(null);
   const [catName, setCatName] = useState('');
   const [catImage, setCatImage] = useState('');
   const [catSubInput, setCatSubInput] = useState('');
   const [catSubs, setCatSubs] = useState<string[]>([]);
   const [uploadingCatImg, setUploadingCatImg] = useState(false);
   const [savingCat, setSavingCat] = useState(false);
+  const [deletingCatId, setDeletingCatId] = useState<string | null>(null);
 
   // Product Form State
   const [editingProdId, setEditingProdId] = useState<string | null>(null);
+  const [editingProdCreatedAt, setEditingProdCreatedAt] = useState<string | null>(null);
   const [prodName, setProdName] = useState('');
   const [prodCategory, setProdCategory] = useState(categories[0]?.name || '');
   const [prodSubcategory, setProdSubcategory] = useState('');
@@ -176,6 +254,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({
   const [uploadingProdImg, setUploadingProdImg] = useState(false);
   const [uploadProgressText, setUploadProgressText] = useState('');
   const [savingProd, setSavingProd] = useState(false);
+  const [deletingProdId, setDeletingProdId] = useState<string | null>(null);
+  const [duplicatingProdId, setDuplicatingProdId] = useState<string | null>(null);
 
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (user) => {
@@ -212,6 +292,40 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     );
     return () => unsub();
   }, [authUser]);
+
+  useEffect(() => {
+    if (categories.length > 0 && !categories.some((c) => c.name === prodCategory)) {
+      setProdCategory(categories[0].name);
+    }
+  }, [categories, prodCategory]);
+
+  useEffect(() => {
+    let active = true;
+    fetch('/api/health')
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('no-server'))))
+      .then((data: { imgbbConfigured?: boolean }) => {
+        if (active) setServerImgbbReady(Boolean(data.imgbbConfigured));
+      })
+      .catch(() => {
+        if (active) setServerImgbbReady(false);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const saveBrowserImgbbKey = (val: string) => {
+    setBrowserImgbbKey(val);
+    try {
+      if (val.trim()) {
+        localStorage.setItem(IMGBB_STORAGE_KEY, val.trim());
+      } else {
+        localStorage.removeItem(IMGBB_STORAGE_KEY);
+      }
+    } catch {
+      // Ignore storage errors
+    }
+  };
 
   const activeCategoryObj = useMemo(
     () => categories.find((c) => c.name === prodCategory),
@@ -271,13 +385,29 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     setErrorBanner('');
     try {
       await setDoc(doc(db, 'settings', 'store'), {
-        ...settingsForm,
         brandName: settingsForm.brandName.trim().slice(0, 100),
         shortMark: settingsForm.shortMark.trim().slice(0, 40),
         domain: settingsForm.domain.trim().slice(0, 120),
         email: settingsForm.email.trim().slice(0, 120),
         primaryPhone: settingsForm.primaryPhone.trim().slice(0, 40),
         secondaryPhone: settingsForm.secondaryPhone.trim().slice(0, 40),
+        instagramUrl: settingsForm.instagramUrl.trim().slice(0, 400),
+        handle: settingsForm.handle.trim().slice(0, 100),
+        tiktokUrl: settingsForm.tiktokUrl.trim().slice(0, 400),
+        tiktokHandle: settingsForm.tiktokHandle.trim().slice(0, 100),
+        facebookUrl: settingsForm.facebookUrl.trim().slice(0, 400),
+        codEnabled: Boolean(settingsForm.codEnabled),
+        easypaisaEnabled: Boolean(settingsForm.easypaisaEnabled),
+        easypaisaAccountTitle: settingsForm.easypaisaAccountTitle.trim().slice(0, 120),
+        easypaisaNumber: settingsForm.easypaisaNumber.trim().slice(0, 40),
+        jazzcashEnabled: Boolean(settingsForm.jazzcashEnabled),
+        jazzcashAccountTitle: settingsForm.jazzcashAccountTitle.trim().slice(0, 120),
+        jazzcashNumber: settingsForm.jazzcashNumber.trim().slice(0, 40),
+        bankEnabled: Boolean(settingsForm.bankEnabled),
+        bankName: settingsForm.bankName.trim().slice(0, 120),
+        bankAccountTitle: settingsForm.bankAccountTitle.trim().slice(0, 120),
+        bankAccountNumber: settingsForm.bankAccountNumber.trim().slice(0, 120),
+        bankIban: settingsForm.bankIban.trim().slice(0, 80),
         updatedAt: new Date().toISOString(),
       });
       showToast('Website settings & payment details updated.');
@@ -297,6 +427,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({
   // Category CRUD
   const resetCategoryForm = () => {
     setEditingCatId(null);
+    setEditingCatCreatedAt(null);
+    setEditingCatSortOrder(null);
     setCatName('');
     setCatImage('');
     setCatSubs([]);
@@ -309,11 +441,15 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     setUploadingCatImg(true);
     setErrorBanner('');
     try {
-      const url = await uploadToImgBB(file);
+      const url = await uploadToImgBB(file, browserImgbbKey);
       setCatImage(url);
       showToast('Category image uploaded via ImgBB.');
     } catch (err) {
-      setErrorBanner(err instanceof Error ? err.message : 'Image upload failed.');
+      const msg = err instanceof Error ? err.message : 'Image upload failed.';
+      setErrorBanner(msg);
+      if (msg.toLowerCase().includes('imgbb api key')) {
+        setShowImgbbKeyBox(true);
+      }
     } finally {
       setUploadingCatImg(false);
       e.target.value = '';
@@ -339,10 +475,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     try {
       await setDoc(doc(db, 'categories', id), {
         name: catName.trim().slice(0, 80),
-        image: catImage.trim().slice(0, 600),
+        image: catImage.trim().slice(0, 2000),
         subcategories: catSubs.slice(0, 30),
-        sortOrder: categories.length + 1,
-        createdAt: now,
+        sortOrder: editingCatSortOrder ?? categories.length + 1,
+        createdAt: editingCatCreatedAt || now,
         updatedAt: now,
       });
       showToast(editingCatId ? 'Category updated.' : 'Category created.');
@@ -361,8 +497,13 @@ export const AdminPage: React.FC<AdminPageProps> = ({
   };
 
   const handleDeleteCategory = async (id: string) => {
+    setDeletingCatId(id);
+    setErrorBanner('');
     try {
       await deleteDoc(doc(db, 'categories', id));
+      if (editingCatId === id) {
+        resetCategoryForm();
+      }
       showToast('Category removed.');
     } catch (err) {
       try {
@@ -372,12 +513,15 @@ export const AdminPage: React.FC<AdminPageProps> = ({
           wrapped instanceof Error ? wrapped.message : 'Failed to delete category.'
         );
       }
+    } finally {
+      setDeletingCatId(null);
     }
   };
 
   // Product CRUD
   const resetProductForm = () => {
     setEditingProdId(null);
+    setEditingProdCreatedAt(null);
     setProdName('');
     setProdCategory(categories[0]?.name || '');
     setProdSubcategory('');
@@ -402,13 +546,17 @@ export const AdminPage: React.FC<AdminPageProps> = ({
       const uploadedUrls: string[] = [];
       for (let i = 0; i < files.length; i += 1) {
         setUploadProgressText(`Uploading ${i + 1} of ${files.length}...`);
-        const url = await uploadToImgBB(files[i]);
+        const url = await uploadToImgBB(files[i], browserImgbbKey);
         uploadedUrls.push(url);
       }
       setProdImages((prev) => [...prev, ...uploadedUrls]);
       showToast(`${uploadedUrls.length} image(s) uploaded to ImgBB.`);
     } catch (err) {
-      setErrorBanner(err instanceof Error ? err.message : 'Image upload failed.');
+      const msg = err instanceof Error ? err.message : 'Image upload failed.';
+      setErrorBanner(msg);
+      if (msg.toLowerCase().includes('imgbb api key')) {
+        setShowImgbbKeyBox(true);
+      }
     } finally {
       setUploadingProdImg(false);
       setUploadProgressText('');
@@ -463,6 +611,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     const now = new Date().toISOString();
     const id = editingProdId || slugifyId(prodName);
     const compareVal = Number(prodComparePrice);
+    const cleanImages = prodImages
+      .map((u) => u.trim().slice(0, 2000))
+      .filter(Boolean)
+      .slice(0, 100);
 
     try {
       await setDoc(doc(db, 'products', id), {
@@ -472,8 +624,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({
         series: '',
         pricePkr: Math.round(numericPrice),
         compareAtPkr: compareVal > numericPrice ? Math.round(compareVal) : null,
-        image: prodImages[0],
-        gallery: prodImages,
+        image: cleanImages[0],
+        gallery: cleanImages,
         fabric: prodFabric.trim().slice(0, 160),
         description: prodDesc.trim().slice(0, 1500),
         highlights: [
@@ -481,11 +633,11 @@ export const AdminPage: React.FC<AdminPageProps> = ({
           'Cash on Delivery, Easypaisa & JazzCash accepted',
         ],
         careInstructions: ['Cold gentle wash', 'Air dry in shade'],
-        sizes: prodSizes,
-        colors: prodColors,
+        sizes: prodSizes.slice(0, 20),
+        colors: prodColors.slice(0, 15),
         availability: prodAvailability,
         featured: prodFeatured,
-        createdAt: now,
+        createdAt: editingProdCreatedAt || now,
         updatedAt: now,
       });
       showToast(editingProdId ? 'Product updated.' : 'Product published to store.');
@@ -505,6 +657,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({
 
   const handleEditProduct = (p: Product) => {
     setEditingProdId(p.id);
+    setEditingProdCreatedAt(p.createdAt || null);
     setProdName(p.name);
     setProdCategory(p.category);
     setProdSubcategory(p.subcategory || '');
@@ -521,9 +674,70 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  const handleDuplicateProduct = async (p: Product) => {
+    setDuplicatingProdId(p.id);
+    setErrorBanner('');
+    const now = new Date().toISOString();
+    const copyName = `${p.name} (Copy)`.slice(0, 120);
+    const copyId = slugifyId(`${p.name}-copy`);
+    const galleryList =
+      p.gallery && p.gallery.length > 0 ? p.gallery.slice(0, 100) : [p.image];
+
+    try {
+      await setDoc(doc(db, 'products', copyId), {
+        name: copyName,
+        category: p.category.slice(0, 80),
+        subcategory: (p.subcategory || '').slice(0, 80),
+        series: (p.series || '').slice(0, 80),
+        pricePkr: Math.max(1, Math.round(p.pricePkr)),
+        compareAtPkr:
+          p.compareAtPkr && p.compareAtPkr > p.pricePkr
+            ? Math.round(p.compareAtPkr)
+            : null,
+        image: galleryList[0].slice(0, 2000),
+        gallery: galleryList,
+        fabric: (p.fabric || '').slice(0, 160),
+        description: (p.description || '').slice(0, 1500),
+        highlights:
+          p.highlights && p.highlights.length > 0
+            ? p.highlights.slice(0, 10)
+            : [
+                'Discreet sealed parcel packaging',
+                'Cash on Delivery, Easypaisa & JazzCash accepted',
+              ],
+        careInstructions:
+          p.careInstructions && p.careInstructions.length > 0
+            ? p.careInstructions.slice(0, 10)
+            : ['Cold gentle wash', 'Air dry in shade'],
+        sizes: (p.sizes || []).slice(0, 20),
+        colors: (p.colors || []).slice(0, 15),
+        availability: p.availability || 'In Stock',
+        featured: Boolean(p.featured),
+        createdAt: now,
+        updatedAt: now,
+      });
+      showToast(`Duplicated "${p.name}".`);
+    } catch (err) {
+      try {
+        handleFirestoreError(err, OperationType.WRITE, `products/${copyId}`);
+      } catch (wrapped) {
+        setErrorBanner(
+          wrapped instanceof Error ? wrapped.message : 'Failed to duplicate product.'
+        );
+      }
+    } finally {
+      setDuplicatingProdId(null);
+    }
+  };
+
   const handleDeleteProduct = async (id: string) => {
+    setDeletingProdId(id);
+    setErrorBanner('');
     try {
       await deleteDoc(doc(db, 'products', id));
+      if (editingProdId === id) {
+        resetProductForm();
+      }
       showToast('Product deleted.');
     } catch (err) {
       try {
@@ -533,6 +747,8 @@ export const AdminPage: React.FC<AdminPageProps> = ({
           wrapped instanceof Error ? wrapped.message : 'Failed to delete product.'
         );
       }
+    } finally {
+      setDeletingProdId(null);
     }
   };
 
@@ -896,23 +1112,45 @@ export const AdminPage: React.FC<AdminPageProps> = ({
 
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <div>
-                  <label className="block text-xs font-bold text-[#0E171D] uppercase">
-                    Category
-                  </label>
-                  <select
-                    value={prodCategory}
-                    onChange={(e) => {
-                      setProdCategory(e.target.value);
-                      setProdSubcategory('');
-                    }}
-                    className="mt-1.5 min-h-[40px] w-full rounded-lg border border-[#D4E3E7] bg-[#F5FAFB] px-3 py-2 text-sm text-[#0E171D]"
-                  >
-                    {categories.map((c) => (
-                      <option key={c.id} value={c.name}>
-                        {c.name}
-                      </option>
-                    ))}
-                  </select>
+                  <div className="flex items-center justify-between">
+                    <label className="block text-xs font-bold text-[#0E171D] uppercase">
+                      Category
+                    </label>
+                    {categories.length === 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('categories')}
+                        className="text-[11px] font-semibold text-[#118A9B] hover:underline cursor-pointer"
+                      >
+                        + Create Category
+                      </button>
+                    )}
+                  </div>
+                  {categories.length > 0 ? (
+                    <select
+                      value={prodCategory}
+                      onChange={(e) => {
+                        setProdCategory(e.target.value);
+                        setProdSubcategory('');
+                      }}
+                      className="mt-1.5 min-h-[40px] w-full rounded-lg border border-[#D4E3E7] bg-[#F5FAFB] px-3 py-2 text-sm text-[#0E171D]"
+                    >
+                      {categories.map((c) => (
+                        <option key={c.id} value={c.name}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type="text"
+                      required
+                      value={prodCategory}
+                      onChange={(e) => setProdCategory(e.target.value)}
+                      placeholder="Type category (e.g. Innerwear)"
+                      className="mt-1.5 min-h-[40px] w-full rounded-lg border border-[#D4E3E7] bg-[#F5FAFB] px-3 py-2 text-sm text-[#0E171D]"
+                    />
+                  )}
                 </div>
 
                 <div>
@@ -992,9 +1230,39 @@ export const AdminPage: React.FC<AdminPageProps> = ({
 
               {/* ImgBB Upload + URL */}
               <div>
-                <span className="block text-xs font-bold text-[#0E171D] uppercase">
-                  Product Images (ImgBB Upload)
-                </span>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="block text-xs font-bold text-[#0E171D] uppercase">
+                    Product Images (ImgBB Upload)
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowImgbbKeyBox((v) => !v)}
+                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#118A9B] hover:underline cursor-pointer"
+                  >
+                    <KeyRound className="h-3 w-3" aria-hidden="true" />
+                    <span>
+                      {serverImgbbReady || browserImgbbKey.trim()
+                        ? 'ImgBB Ready'
+                        : 'Set ImgBB Key'}
+                    </span>
+                  </button>
+                </div>
+
+                {(showImgbbKeyBox || (!serverImgbbReady && !browserImgbbKey.trim())) && (
+                  <div className="mt-2 rounded-lg border border-[#DCEBEF] bg-[#F5FAFB] p-2.5">
+                    <label className="block text-[11px] font-semibold text-[#425561]">
+                      ImgBB API Key (saved only in your browser for uploads / GitHub Pages)
+                    </label>
+                    <input
+                      type="password"
+                      value={browserImgbbKey}
+                      onChange={(e) => saveBrowserImgbbKey(e.target.value)}
+                      placeholder="Paste your ImgBB API key..."
+                      className="mt-1 min-h-[34px] w-full rounded-md border border-[#D4E3E7] bg-white px-2.5 text-xs text-[#0E171D]"
+                    />
+                  </div>
+                )}
+
                 <label className="mt-2 flex min-h-[44px] cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-[#118A9B] bg-[#EEF9FB] px-4 py-2 text-xs font-bold text-[#118A9B] hover:bg-[#E1F4F8]">
                   <Upload className="h-4 w-4" aria-hidden="true" />
                   <span>
@@ -1194,52 +1462,74 @@ export const AdminPage: React.FC<AdminPageProps> = ({
 
             {/* Existing Products List */}
             <div className="space-y-3 lg:col-span-7">
-              {products.map((p) => (
-                <div
-                  key={p.id}
-                  className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-[#DCEBEF] bg-white p-4"
-                >
-                  <div className="flex items-center gap-3.5">
-                    <div className="h-16 w-16 shrink-0 overflow-hidden rounded-xl border border-[#DCEBEF]">
-                      <ProductImage src={p.image} alt={p.name} className="h-full w-full" />
-                    </div>
-                    <div>
-                      <p className="font-display text-sm font-bold text-[#0E171D]">
-                        {p.name}
-                      </p>
-                      <p className="text-xs text-[#546A76]">
-                        {p.category}
-                        {p.subcategory ? ` · ${p.subcategory}` : ''} ·{' '}
-                        <strong className="text-[#0E171D]">{formatPkr(p.pricePkr)}</strong>
-                      </p>
-                      {(p.sizes?.length || 0) > 0 || (p.colors?.length || 0) > 0 ? (
-                        <p className="mt-0.5 text-[11px] text-[#118A9B]">
-                          {p.sizes?.length ? `${p.sizes.length} sizes` : ''}{' '}
-                          {p.colors?.length ? `· ${p.colors.length} colors` : ''}
-                        </p>
-                      ) : null}
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => handleEditProduct(p)}
-                      className="rounded-lg border border-[#D4E3E7] bg-[#F5FAFB] px-3 py-1.5 text-xs font-semibold text-[#0E171D] hover:bg-[#E7F4F6] cursor-pointer"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void handleDeleteProduct(p.id)}
-                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[#DCEBEF] text-[#6B7D88] hover:text-[#B42318] cursor-pointer"
-                      aria-label={`Delete ${p.name}`}
-                    >
-                      <Trash2 className="h-4 w-4" aria-hidden="true" />
-                    </button>
-                  </div>
+              {products.length === 0 ? (
+                <div className="rounded-2xl border border-[#DCEBEF] bg-white p-10 text-center">
+                  <p className="font-display text-base font-bold text-[#0E171D]">
+                    No products added yet
+                  </p>
+                  <p className="mt-1 text-xs text-[#546A76]">
+                    Use the form on the left to upload your first product.
+                  </p>
                 </div>
-              ))}
+              ) : (
+                products.map((p) => (
+                  <div
+                    key={p.id}
+                    className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-[#DCEBEF] bg-white p-4"
+                  >
+                    <div className="flex items-center gap-3.5">
+                      <div className="h-16 w-16 shrink-0 overflow-hidden rounded-xl border border-[#DCEBEF]">
+                        <ProductImage src={p.image} alt={p.name} className="h-full w-full" />
+                      </div>
+                      <div>
+                        <p className="font-display text-sm font-bold text-[#0E171D]">
+                          {p.name}
+                        </p>
+                        <p className="text-xs text-[#546A76]">
+                          {p.category}
+                          {p.subcategory ? ` · ${p.subcategory}` : ''} ·{' '}
+                          <strong className="text-[#0E171D]">{formatPkr(p.pricePkr)}</strong>
+                        </p>
+                        {(p.sizes?.length || 0) > 0 || (p.colors?.length || 0) > 0 ? (
+                          <p className="mt-0.5 text-[11px] text-[#118A9B]">
+                            {p.sizes?.length ? `${p.sizes.length} sizes` : ''}{' '}
+                            {p.colors?.length ? `· ${p.colors.length} colors` : ''}
+                          </p>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => handleEditProduct(p)}
+                        className="rounded-lg border border-[#D4E3E7] bg-[#F5FAFB] px-3 py-1.5 text-xs font-semibold text-[#0E171D] hover:bg-[#E7F4F6] cursor-pointer"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        disabled={duplicatingProdId === p.id}
+                        onClick={() => void handleDuplicateProduct(p)}
+                        className="inline-flex items-center gap-1 rounded-lg border border-[#D4E3E7] bg-white px-2.5 py-1.5 text-xs font-semibold text-[#118A9B] hover:bg-[#EEF9FB] disabled:opacity-50 cursor-pointer"
+                        aria-label={`Duplicate ${p.name}`}
+                      >
+                        <Copy className="h-3.5 w-3.5" aria-hidden="true" />
+                        <span>{duplicatingProdId === p.id ? '...' : 'Duplicate'}</span>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={deletingProdId === p.id}
+                        onClick={() => void handleDeleteProduct(p.id)}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[#DCEBEF] text-[#6B7D88] hover:border-[#F0B4AE] hover:text-[#B42318] disabled:opacity-50 cursor-pointer"
+                        aria-label={`Delete ${p.name}`}
+                      >
+                        <Trash2 className="h-4 w-4" aria-hidden="true" />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         )}
@@ -1281,9 +1571,39 @@ export const AdminPage: React.FC<AdminPageProps> = ({
               </div>
 
               <div>
-                <span className="block text-xs font-bold text-[#0E171D] uppercase">
-                  Cover Image
-                </span>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="block text-xs font-bold text-[#0E171D] uppercase">
+                    Cover Image
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowImgbbKeyBox((v) => !v)}
+                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#118A9B] hover:underline cursor-pointer"
+                  >
+                    <KeyRound className="h-3 w-3" aria-hidden="true" />
+                    <span>
+                      {serverImgbbReady || browserImgbbKey.trim()
+                        ? 'ImgBB Ready'
+                        : 'Set ImgBB Key'}
+                    </span>
+                  </button>
+                </div>
+
+                {(showImgbbKeyBox || (!serverImgbbReady && !browserImgbbKey.trim())) && (
+                  <div className="mt-2 rounded-lg border border-[#DCEBEF] bg-[#F5FAFB] p-2.5">
+                    <label className="block text-[11px] font-semibold text-[#425561]">
+                      ImgBB API Key (saved only in your browser for uploads / GitHub Pages)
+                    </label>
+                    <input
+                      type="password"
+                      value={browserImgbbKey}
+                      onChange={(e) => saveBrowserImgbbKey(e.target.value)}
+                      placeholder="Paste your ImgBB API key..."
+                      className="mt-1 min-h-[34px] w-full rounded-md border border-[#D4E3E7] bg-white px-2.5 text-xs text-[#0E171D]"
+                    />
+                  </div>
+                )}
+
                 <div className="mt-1.5 flex gap-2">
                   <input
                     type="url"
@@ -1303,6 +1623,11 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                     />
                   </label>
                 </div>
+                {catImage && (
+                  <div className="mt-2 h-16 w-16 overflow-hidden rounded-lg border border-[#DCEBEF]">
+                    <ProductImage src={catImage} alt="Category preview" className="h-full w-full" />
+                  </div>
+                )}
               </div>
 
               <div>
@@ -1364,51 +1689,66 @@ export const AdminPage: React.FC<AdminPageProps> = ({
             </form>
 
             <div className="space-y-3 lg:col-span-7">
-              {categories.map((cat) => (
-                <div
-                  key={cat.id}
-                  className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-[#DCEBEF] bg-white p-4"
-                >
-                  <div className="flex items-center gap-3.5">
-                    <div className="h-14 w-14 shrink-0 overflow-hidden rounded-xl border border-[#DCEBEF]">
-                      <ProductImage src={cat.image} alt={cat.name} className="h-full w-full" />
-                    </div>
-                    <div>
-                      <p className="font-display text-sm font-bold text-[#0E171D]">
-                        {cat.name}
-                      </p>
-                      <p className="mt-0.5 text-xs text-[#546A76]">
-                        {cat.subcategories.length > 0
-                          ? cat.subcategories.join(' · ')
-                          : 'No subcategories'}
-                      </p>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditingCatId(cat.id);
-                        setCatName(cat.name);
-                        setCatImage(cat.image);
-                        setCatSubs(cat.subcategories);
-                      }}
-                      className="rounded-lg border border-[#D4E3E7] bg-[#F5FAFB] px-3 py-1.5 text-xs font-semibold text-[#0E171D] hover:bg-[#E7F4F6] cursor-pointer"
-                    >
-                      Edit
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void handleDeleteCategory(cat.id)}
-                      className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[#DCEBEF] text-[#6B7D88] hover:text-[#B42318] cursor-pointer"
-                      aria-label={`Delete ${cat.name}`}
-                    >
-                      <Trash2 className="h-4 w-4" aria-hidden="true" />
-                    </button>
-                  </div>
+              {categories.length === 0 ? (
+                <div className="rounded-2xl border border-[#DCEBEF] bg-white p-10 text-center">
+                  <p className="font-display text-base font-bold text-[#0E171D]">
+                    No categories added yet
+                  </p>
+                  <p className="mt-1 text-xs text-[#546A76]">
+                    Create your first category and subcategories on the left.
+                  </p>
                 </div>
-              ))}
+              ) : (
+                categories.map((cat) => (
+                  <div
+                    key={cat.id}
+                    className="flex flex-wrap items-center justify-between gap-4 rounded-2xl border border-[#DCEBEF] bg-white p-4"
+                  >
+                    <div className="flex items-center gap-3.5">
+                      <div className="h-14 w-14 shrink-0 overflow-hidden rounded-xl border border-[#DCEBEF]">
+                        <ProductImage src={cat.image} alt={cat.name} className="h-full w-full" />
+                      </div>
+                      <div>
+                        <p className="font-display text-sm font-bold text-[#0E171D]">
+                          {cat.name}
+                        </p>
+                        <p className="mt-0.5 text-xs text-[#546A76]">
+                          {cat.subcategories.length > 0
+                            ? cat.subcategories.join(' · ')
+                            : 'No subcategories'}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingCatId(cat.id);
+                          setEditingCatCreatedAt(null);
+                          setEditingCatSortOrder(cat.sortOrder ?? null);
+                          setCatName(cat.name);
+                          setCatImage(cat.image);
+                          setCatSubs(cat.subcategories);
+                          window.scrollTo({ top: 0, behavior: 'smooth' });
+                        }}
+                        className="rounded-lg border border-[#D4E3E7] bg-[#F5FAFB] px-3 py-1.5 text-xs font-semibold text-[#0E171D] hover:bg-[#E7F4F6] cursor-pointer"
+                      >
+                        Edit
+                      </button>
+                      <button
+                        type="button"
+                        disabled={deletingCatId === cat.id}
+                        onClick={() => void handleDeleteCategory(cat.id)}
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[#DCEBEF] text-[#6B7D88] hover:border-[#F0B4AE] hover:text-[#B42318] disabled:opacity-50 cursor-pointer"
+                        aria-label={`Delete ${cat.name}`}
+                      >
+                        <Trash2 className="h-4 w-4" aria-hidden="true" />
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         )}

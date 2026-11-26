@@ -9,7 +9,7 @@ import {
   Sparkles,
   Truck,
 } from 'lucide-react';
-import { PRODUCT_IMAGES, QUALITY_PARTNERS, StoreSettings } from '../data/catalog';
+import { BANNER_IMAGES, QUALITY_PARTNERS, StoreSettings } from '../data/catalog';
 import { BrandLogo } from './BrandLogo';
 import { ProductImage } from './ProductImage';
 
@@ -67,8 +67,8 @@ export const AboutPage: React.FC<AboutPageProps> = ({
       <section className="relative w-full overflow-hidden bg-[#09181D]">
         <div className="relative min-h-[210px] w-full sm:min-h-[250px]">
           <ProductImage
-            src={PRODUCT_IMAGES[18]}
-            alt="About K&SON'S COLLECTION'S"
+            src={BANNER_IMAGES.packaging}
+            alt={`About ${storeSettings.brandName}`}
             className="absolute inset-0 h-full w-full object-cover"
           />
           <div className="absolute inset-0 bg-gradient-to-r from-[#07151A]/90 via-[#07151A]/65 to-transparent" />

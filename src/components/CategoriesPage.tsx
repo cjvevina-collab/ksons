@@ -1,6 +1,6 @@
 import React from 'react';
-import { ArrowRight, Layers } from 'lucide-react';
-import { CategoryItem, PRODUCT_IMAGES, Product } from '../data/catalog';
+import { ArrowRight, FolderOpen, Layers } from 'lucide-react';
+import { BANNER_IMAGES, CategoryItem, Product } from '../data/catalog';
 import { ProductImage } from './ProductImage';
 
 interface CategoriesPageProps {
@@ -22,8 +22,8 @@ export const CategoriesPage: React.FC<CategoriesPageProps> = ({
       <section className="relative w-full overflow-hidden bg-[#09181D]">
         <div className="relative min-h-[210px] w-full sm:min-h-[250px]">
           <ProductImage
-            src={PRODUCT_IMAGES[15]}
-            alt="K&SON'S COLLECTION'S Categories"
+            src={BANNER_IMAGES.winter}
+            alt="All Categories"
             className="absolute inset-0 h-full w-full object-cover"
           />
           <div className="absolute inset-0 bg-gradient-to-r from-[#07151A]/90 via-[#07151A]/65 to-transparent" />
@@ -63,79 +63,93 @@ export const CategoriesPage: React.FC<CategoriesPageProps> = ({
           </button>
         </div>
 
-        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
-          {categories.map((cat) => {
-            const count = products.filter((p) => p.category === cat.name).length;
-            return (
-              <div
-                key={cat.id}
-                className="group flex flex-col justify-between overflow-hidden rounded-2xl border border-[#DCEBEF] bg-white transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md"
-              >
-                <div>
-                  <button
-                    type="button"
-                    onClick={() => onSelectCategory(cat.name)}
-                    className="block w-full overflow-hidden bg-[#F5FAFB] text-left cursor-pointer"
-                  >
-                    <div className="aspect-4/3 w-full overflow-hidden">
-                      <ProductImage
-                        src={cat.image || PRODUCT_IMAGES[0]}
-                        alt={cat.name}
-                        className="h-full w-full transition-transform duration-300 group-hover:scale-105"
-                      />
-                    </div>
-                  </button>
-
-                  <div className="p-5">
-                    <div className="flex items-center justify-between gap-2">
-                      <button
-                        type="button"
-                        onClick={() => onSelectCategory(cat.name)}
-                        className="text-left font-display text-lg font-extrabold text-[#0E171D] uppercase transition-colors group-hover:text-[#118A9B] cursor-pointer"
-                      >
-                        {cat.name}
-                      </button>
-                      <span className="shrink-0 text-xs font-semibold text-[#546A76] tabular-nums">
-                        {count} {count === 1 ? 'item' : 'items'}
-                      </span>
-                    </div>
-
-                    {cat.subcategories.length > 0 ? (
-                      <div className="mt-3.5 flex flex-wrap gap-1.5">
-                        {cat.subcategories.map((sub) => (
-                          <button
-                            key={sub}
-                            type="button"
-                            onClick={() => onSelectCategory(cat.name, sub)}
-                            className="rounded-md border border-[#DCEBEF] bg-[#F5FAFB] px-2.5 py-1 text-xs font-medium text-[#334550] transition-colors hover:border-[#118A9B] hover:bg-[#EEF9FB] hover:text-[#118A9B] cursor-pointer"
-                          >
-                            {sub}
-                          </button>
-                        ))}
+        {categories.length === 0 ? (
+          <div className="rounded-2xl border border-[#DCEBEF] bg-white p-12 text-center">
+            <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-xl bg-[#EEF9FB] text-[#118A9B]">
+              <FolderOpen className="h-6 w-6" aria-hidden="true" />
+            </div>
+            <h3 className="mt-4 font-display text-lg font-extrabold text-[#0E171D] uppercase">
+              No Categories Added Yet
+            </h3>
+            <p className="mt-1.5 text-sm text-[#546A76]">
+              Categories created in the Admin panel will appear here automatically.
+            </p>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-3">
+            {categories.map((cat) => {
+              const count = products.filter((p) => p.category === cat.name).length;
+              return (
+                <div
+                  key={cat.id}
+                  className="group flex flex-col justify-between overflow-hidden rounded-2xl border border-[#DCEBEF] bg-white transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md"
+                >
+                  <div>
+                    <button
+                      type="button"
+                      onClick={() => onSelectCategory(cat.name)}
+                      className="block w-full overflow-hidden bg-[#F5FAFB] text-left cursor-pointer"
+                    >
+                      <div className="aspect-4/3 w-full overflow-hidden">
+                        <ProductImage
+                          src={cat.image || BANNER_IMAGES.everyday}
+                          alt={cat.name}
+                          className="h-full w-full transition-transform duration-300 group-hover:scale-105"
+                        />
                       </div>
-                    ) : (
-                      <p className="mt-3 flex items-center gap-1.5 text-xs text-[#546A76]">
-                        <Layers className="h-3.5 w-3.5 text-[#118A9B]" aria-hidden="true" />
-                        <span>View full collection</span>
-                      </p>
-                    )}
+                    </button>
+
+                    <div className="p-5">
+                      <div className="flex items-center justify-between gap-2">
+                        <button
+                          type="button"
+                          onClick={() => onSelectCategory(cat.name)}
+                          className="text-left font-display text-lg font-extrabold text-[#0E171D] uppercase transition-colors group-hover:text-[#118A9B] cursor-pointer"
+                        >
+                          {cat.name}
+                        </button>
+                        <span className="shrink-0 text-xs font-semibold text-[#546A76] tabular-nums">
+                          {count} {count === 1 ? 'item' : 'items'}
+                        </span>
+                      </div>
+
+                      {cat.subcategories.length > 0 ? (
+                        <div className="mt-3.5 flex flex-wrap gap-1.5">
+                          {cat.subcategories.map((sub) => (
+                            <button
+                              key={sub}
+                              type="button"
+                              onClick={() => onSelectCategory(cat.name, sub)}
+                              className="rounded-md border border-[#DCEBEF] bg-[#F5FAFB] px-2.5 py-1 text-xs font-medium text-[#334550] transition-colors hover:border-[#118A9B] hover:bg-[#EEF9FB] hover:text-[#118A9B] cursor-pointer"
+                            >
+                              {sub}
+                            </button>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="mt-3 flex items-center gap-1.5 text-xs text-[#546A76]">
+                          <Layers className="h-3.5 w-3.5 text-[#118A9B]" aria-hidden="true" />
+                          <span>View full collection</span>
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="border-t border-[#EEF5F7] px-5 py-3.5">
+                    <button
+                      type="button"
+                      onClick={() => onSelectCategory(cat.name)}
+                      className="inline-flex w-full items-center justify-between font-display text-xs font-bold text-[#118A9B] uppercase hover:text-[#0D7280] cursor-pointer"
+                    >
+                      <span>Explore {cat.name}</span>
+                      <ArrowRight className="h-4 w-4" aria-hidden="true" />
+                    </button>
                   </div>
                 </div>
-
-                <div className="border-t border-[#EEF5F7] px-5 py-3.5">
-                  <button
-                    type="button"
-                    onClick={() => onSelectCategory(cat.name)}
-                    className="inline-flex w-full items-center justify-between font-display text-xs font-bold text-[#118A9B] uppercase hover:text-[#0D7280] cursor-pointer"
-                  >
-                    <span>Explore {cat.name}</span>
-                    <ArrowRight className="h-4 w-4" aria-hidden="true" />
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
+              );
+            })}
+          </div>
+        )}
       </section>
     </div>
   );
