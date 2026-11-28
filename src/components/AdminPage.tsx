@@ -97,7 +97,8 @@ function isValidImageUrl(value: string): boolean {
   return (
     trimmed.startsWith('https://') ||
     trimmed.startsWith('http://') ||
-    trimmed.startsWith('/assets/')
+    trimmed.startsWith('/assets/') ||
+    trimmed.startsWith('firestore-media://')
   );
 }
 
@@ -140,37 +141,103 @@ async function prepareImageDataUrl(file: File): Promise<string> {
   });
 }
 
-async function uploadToImgBB(file: File): Promise<string> {
+async function compressForFirestoreMedia(file: File): Promise<string> {
+  const rawDataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('Failed to read image file.'));
+    reader.readAsDataURL(file);
+  });
+
+  return new Promise<string>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => {
+      const attempts: Array<{ maxDim: number; quality: number }> = [
+        { maxDim: 1200, quality: 0.84 },
+        { maxDim: 1000, quality: 0.76 },
+        { maxDim: 850, quality: 0.68 },
+        { maxDim: 700, quality: 0.6 },
+      ];
+
+      for (const { maxDim, quality } of attempts) {
+        let { width, height } = img;
+        if (width > maxDim || height > maxDim) {
+          const scale = Math.min(maxDim / width, maxDim / height);
+          width = Math.max(1, Math.round(width * scale));
+          height = Math.max(1, Math.round(height * scale));
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) continue;
+        ctx.fillStyle = '#FFFFFF';
+        ctx.fillRect(0, 0, width, height);
+        ctx.drawImage(img, 0, 0, width, height);
+        const compressed = canvas.toDataURL('image/jpeg', quality);
+        if (compressed.length <= 850000) {
+          resolve(compressed);
+          return;
+        }
+      }
+      reject(new Error('Image is too complex to compress. Please choose a smaller image.'));
+    };
+    img.onerror = () => reject(new Error('Unsupported image format. Please use JPG or PNG.'));
+    img.src = rawDataUrl;
+  });
+}
+
+async function uploadImageAsset(file: File): Promise<string> {
   const user = auth.currentUser;
   if (!user) throw new Error('Please sign in first.');
   const token = await user.getIdToken();
   const dataUrl = await prepareImageDataUrl(file);
   const cleanName = file.name.replace(/\.[^.]+$/, '').slice(0, 64);
 
-  const resp = await fetch('/api/upload-image', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      Authorization: `Bearer ${token}`,
-    },
-    body: JSON.stringify({
-      imageBase64: dataUrl,
-      name: cleanName,
-    }),
-  });
-
-  const text = await resp.text();
-  let payload: { url?: string; error?: string } = {};
   try {
-    payload = JSON.parse(text) as { url?: string; error?: string };
+    const resp = await fetch('/api/upload-image', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`,
+      },
+      body: JSON.stringify({
+        imageBase64: dataUrl,
+        name: cleanName,
+      }),
+    });
+
+    const text = await resp.text();
+    const payload = JSON.parse(text) as { url?: string; error?: string };
+    if (resp.ok && payload.url) {
+      return payload.url;
+    }
   } catch {
-    throw new Error('Image upload server unavailable. Please paste a direct image URL.');
+    // Static host (e.g. Hostinger / GitHub Pages) has no /api/upload-image server; fall back to Firestore Media
   }
 
-  if (!resp.ok || !payload.url) {
-    throw new Error(payload.error || 'Image upload failed.');
+  const compactDataUrl = await compressForFirestoreMedia(file);
+  const mediaId = slugifyId(`img-${cleanName || 'product'}`);
+  try {
+    await setDoc(doc(db, 'media', mediaId), {
+      dataUrl: compactDataUrl,
+      contentType: 'image/jpeg',
+      createdAt: new Date().toISOString(),
+    });
+    return `firestore-media://${mediaId}`;
+  } catch (err) {
+    try {
+      handleFirestoreError(err, OperationType.WRITE, `media/${mediaId}`);
+    } catch (wrapped) {
+      const msg = wrapped instanceof Error ? wrapped.message : '';
+      if (msg.toLowerCase().includes('permission')) {
+        throw new Error(
+          'Please publish the updated Firestore Rules (including /media/) in Firebase Console to enable direct uploads on Hostinger.'
+        );
+      }
+    }
+    throw new Error('Failed to store uploaded image. Please check your connection and try again.');
   }
-  return payload.url;
 }
 
 export const AdminPage: React.FC<AdminPageProps> = ({
@@ -390,7 +457,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     setUploadingCatImg(true);
     setErrorBanner('');
     try {
-      const url = await uploadToImgBB(file);
+      const url = await uploadImageAsset(file);
       setCatImage(url);
       showToast('Category image uploaded.');
     } catch (err) {
@@ -495,7 +562,7 @@ export const AdminPage: React.FC<AdminPageProps> = ({
       const uploadedUrls: string[] = [];
       for (let i = 0; i < files.length; i += 1) {
         setUploadProgressText(`Uploading ${i + 1} of ${files.length}...`);
-        const url = await uploadToImgBB(files[i]);
+        const url = await uploadImageAsset(files[i]);
         uploadedUrls.push(url);
       }
       setProdImages((prev) => [...prev, ...uploadedUrls]);

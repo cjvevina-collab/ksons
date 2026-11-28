@@ -126,6 +126,16 @@ service cloud.firestore {
         && data.updatedAt is string && data.updatedAt.size() <= 64;
     }
 
+    function isValidMedia(data) {
+      return data.keys().hasAll(['dataUrl', 'contentType', 'createdAt'])
+        && data.keys().hasOnly(['dataUrl', 'contentType', 'createdAt'])
+        && data.dataUrl is string
+        && data.dataUrl.size() >= 30
+        && data.dataUrl.size() <= 950000
+        && data.contentType in ['image/jpeg', 'image/png', 'image/webp']
+        && data.createdAt is string && data.createdAt.size() <= 64;
+    }
+
     match /test/{docId} {
       allow get: if docId == 'connection';
     }
@@ -133,6 +143,12 @@ service cloud.firestore {
     match /settings/{docId} {
       allow get: if docId == 'store';
       allow create, update: if isAdmin() && docId == 'store' && isValidStoreSettings(incoming());
+    }
+
+    match /media/{mediaId} {
+      allow get: if true;
+      allow create, update: if isAdmin() && isValidId(mediaId) && isValidMedia(incoming());
+      allow delete: if isAdmin();
     }
 
     match /categories/{categoryId} {
