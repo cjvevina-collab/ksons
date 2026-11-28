@@ -37,10 +37,31 @@ async function verifyAdminFirebaseToken(idToken: string): Promise<boolean> {
 
 async function startServer() {
   const app = express();
-  app.use(express.json({ limit: '10mb' }));
+  app.use(express.json({ limit: '25mb' }));
+
+  app.use(
+    (
+      err: { type?: string; status?: number } | null,
+      _req: express.Request,
+      res: express.Response,
+      next: express.NextFunction
+    ) => {
+      if (err?.type === 'entity.too.large' || err?.status === 413) {
+        res.status(413).json({
+          error: 'Image is too large. Please select a smaller image (under 15 MB).',
+        });
+        return;
+      }
+      if (err) {
+        res.status(400).json({ error: 'Invalid upload request payload.' });
+        return;
+      }
+      next();
+    }
+  );
 
   app.get('/api/health', (_req, res) => {
-    res.json({ ok: true, imgbbConfigured: Boolean(process.env.IMGBB_API_KEY) });
+    res.json({ ok: true, imgbbConfigured: Boolean(process.env.IMGBB_API_KEY?.trim()) });
   });
 
   app.post('/api/upload-image', async (req, res) => {
@@ -61,11 +82,11 @@ async function startServer() {
         return;
       }
 
-      const imgbbKey = process.env.IMGBB_API_KEY;
+      const imgbbKey = process.env.IMGBB_API_KEY?.trim();
       if (!imgbbKey) {
         res.status(503).json({
           error:
-            'IMGBB_API_KEY is not configured in server secrets yet. Please add IMGBB_API_KEY in Settings -> Secrets or paste an image URL directly.',
+            'IMGBB_API_KEY is not configured in server environment secrets.',
         });
         return;
       }
@@ -80,41 +101,58 @@ async function startServer() {
         return;
       }
 
-      const cleanedBase64 = imageBase64.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, '');
-      if (cleanedBase64.length > 9 * 1024 * 1024) {
+      const cleanedBase64 = imageBase64.replace(/^data:[^;]+;base64,/, '').trim();
+      if (!cleanedBase64) {
+        res.status(400).json({ error: 'Empty image payload.' });
+        return;
+      }
+      if (cleanedBase64.length > 20 * 1024 * 1024) {
         res.status(413).json({ error: 'Image size exceeds upload limit.' });
         return;
       }
 
-      const form = new URLSearchParams();
+      const form = new FormData();
       form.append('key', imgbbKey);
       form.append('image', cleanedBase64);
-      if (name && typeof name === 'string') {
-        form.append('name', name.slice(0, 64));
+      if (name && typeof name === 'string' && name.trim()) {
+        form.append('name', name.trim().slice(0, 64));
       }
 
       const uploadResp = await fetch('https://api.imgbb.com/1/upload', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: form.toString(),
+        headers: {
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+          Origin: 'https://imgbb.com',
+          Referer: 'https://imgbb.com/',
+        },
+        body: form,
       });
 
-      const result = (await uploadResp.json()) as {
+      const respText = await uploadResp.text();
+      let result: {
         success?: boolean;
         data?: { url?: string; display_url?: string };
         error?: { message?: string };
-      };
+      } = {};
+      try {
+        result = JSON.parse(respText) as typeof result;
+      } catch {
+        res.status(502).json({
+          error: 'Unexpected response from ImgBB server. Please try again.',
+        });
+        return;
+      }
 
-      if (!uploadResp.ok || !result.success || !result.data?.url) {
+      const uploadedUrl = result.data?.display_url || result.data?.url;
+      if (!uploadResp.ok || !result.success || !uploadedUrl) {
         res.status(502).json({
           error: result.error?.message || 'ImgBB upload failed.',
         });
         return;
       }
 
-      res.json({
-        url: result.data.display_url || result.data.url,
-      });
+      res.json({ url: uploadedUrl });
     } catch {
       res.status(500).json({ error: 'Failed to process image upload.' });
     }

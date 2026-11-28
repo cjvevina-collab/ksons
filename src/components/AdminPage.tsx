@@ -20,7 +20,6 @@ import {
   Copy,
   FolderTree,
   ImagePlus,
-  KeyRound,
   Lock,
   LogOut,
   Package,
@@ -93,97 +92,85 @@ function slugifyId(text: string): string {
   return `${base || 'item'}-${Date.now().toString(36)}`;
 }
 
-const IMGBB_STORAGE_KEY = 'ksons_imgbb_key';
+function isValidImageUrl(value: string): boolean {
+  const trimmed = value.trim();
+  return (
+    trimmed.startsWith('https://') ||
+    trimmed.startsWith('http://') ||
+    trimmed.startsWith('/assets/')
+  );
+}
 
-async function uploadToImgBB(file: File, browserImgbbKey: string): Promise<string> {
-  const user = auth.currentUser;
-  if (!user) throw new Error('Please sign in first.');
-  const token = await user.getIdToken();
-
-  const dataUrl = await new Promise<string>((resolve, reject) => {
+async function prepareImageDataUrl(file: File): Promise<string> {
+  const rawDataUrl = await new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result || ''));
     reader.onerror = () => reject(new Error('Failed to read image file.'));
     reader.readAsDataURL(file);
   });
 
-  const cleanName = file.name.replace(/\.[^.]+$/, '').slice(0, 64);
-  const cleanedBase64 = dataUrl.replace(/^data:image\/[a-zA-Z0-9+.-]+;base64,/, '');
-
-  let serverError = '';
-  let canTryDirect = false;
-
-  try {
-    const resp = await fetch('/api/upload-image', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({
-        imageBase64: dataUrl,
-        name: cleanName,
-      }),
-    });
-
-    const text = await resp.text();
-    let payload: { url?: string; error?: string } = {};
-    try {
-      payload = JSON.parse(text) as { url?: string; error?: string };
-    } catch {
-      canTryDirect = true;
-    }
-
-    if (resp.ok && payload.url) {
-      return payload.url;
-    }
-
-    if (resp.status === 503 || resp.status === 404 || resp.status === 405) {
-      canTryDirect = true;
-    }
-    serverError = payload.error || `Upload endpoint returned status ${resp.status}.`;
-  } catch {
-    canTryDirect = true;
-    serverError = 'Server upload endpoint unavailable.';
+  if (file.type === 'image/gif' || file.size <= 1.5 * 1024 * 1024) {
+    return rawDataUrl;
   }
 
-  const trimmedBrowserKey = browserImgbbKey.trim();
-  if (canTryDirect && trimmedBrowserKey) {
-    const form = new URLSearchParams();
-    form.append('key', trimmedBrowserKey);
-    form.append('image', cleanedBase64);
-    if (cleanName) {
-      form.append('name', cleanName);
-    }
-
-    const directResp = await fetch('https://api.imgbb.com/1/upload', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: form.toString(),
-    });
-
-    const directResult = (await directResp.json()) as {
-      success?: boolean;
-      data?: { url?: string; display_url?: string };
-      error?: { message?: string };
+  return new Promise<string>((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const maxDim = 1600;
+      let { width, height } = img;
+      if (width > maxDim || height > maxDim) {
+        const scale = Math.min(maxDim / width, maxDim / height);
+        width = Math.max(1, Math.round(width * scale));
+        height = Math.max(1, Math.round(height * scale));
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        resolve(rawDataUrl);
+        return;
+      }
+      ctx.drawImage(img, 0, 0, width, height);
+      const optimized = canvas.toDataURL('image/jpeg', 0.88);
+      resolve(optimized.length < rawDataUrl.length ? optimized : rawDataUrl);
     };
+    img.onerror = () => resolve(rawDataUrl);
+    img.src = rawDataUrl;
+  });
+}
 
-    if (!directResp.ok || !directResult.success || !directResult.data?.url) {
-      throw new Error(
-        directResult.error?.message || 'Direct ImgBB upload failed. Check your ImgBB API key.'
-      );
-    }
+async function uploadToImgBB(file: File): Promise<string> {
+  const user = auth.currentUser;
+  if (!user) throw new Error('Please sign in first.');
+  const token = await user.getIdToken();
+  const dataUrl = await prepareImageDataUrl(file);
+  const cleanName = file.name.replace(/\.[^.]+$/, '').slice(0, 64);
 
-    return directResult.data.display_url || directResult.data.url;
+  const resp = await fetch('/api/upload-image', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({
+      imageBase64: dataUrl,
+      name: cleanName,
+    }),
+  });
+
+  const text = await resp.text();
+  let payload: { url?: string; error?: string } = {};
+  try {
+    payload = JSON.parse(text) as { url?: string; error?: string };
+  } catch {
+    throw new Error('Image upload server unavailable. Please paste a direct image URL.');
   }
 
-  if (canTryDirect && !trimmedBrowserKey) {
-    throw new Error(
-      'Enter your ImgBB API key in the ImgBB Key box below (or set IMGBB_API_KEY in server secrets), or paste an image URL.'
-    );
+  if (!resp.ok || !payload.url) {
+    throw new Error(payload.error || 'Image upload failed.');
   }
-
-  throw new Error(serverError || 'Image upload failed.');
+  return payload.url;
 }
 
 export const AdminPage: React.FC<AdminPageProps> = ({
@@ -207,16 +194,6 @@ export const AdminPage: React.FC<AdminPageProps> = ({
   const [errorBanner, setErrorBanner] = useState('');
   const [settingsForm, setSettingsForm] = useState<StoreSettings>(storeSettings);
   const [savingSettings, setSavingSettings] = useState(false);
-
-  const [browserImgbbKey, setBrowserImgbbKey] = useState<string>(() => {
-    try {
-      return localStorage.getItem(IMGBB_STORAGE_KEY) || '';
-    } catch {
-      return '';
-    }
-  });
-  const [serverImgbbReady, setServerImgbbReady] = useState<boolean | null>(null);
-  const [showImgbbKeyBox, setShowImgbbKeyBox] = useState(false);
 
   // Category Form State
   const [editingCatId, setEditingCatId] = useState<string | null>(null);
@@ -298,34 +275,6 @@ export const AdminPage: React.FC<AdminPageProps> = ({
       setProdCategory(categories[0].name);
     }
   }, [categories, prodCategory]);
-
-  useEffect(() => {
-    let active = true;
-    fetch('/api/health')
-      .then((r) => (r.ok ? r.json() : Promise.reject(new Error('no-server'))))
-      .then((data: { imgbbConfigured?: boolean }) => {
-        if (active) setServerImgbbReady(Boolean(data.imgbbConfigured));
-      })
-      .catch(() => {
-        if (active) setServerImgbbReady(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  const saveBrowserImgbbKey = (val: string) => {
-    setBrowserImgbbKey(val);
-    try {
-      if (val.trim()) {
-        localStorage.setItem(IMGBB_STORAGE_KEY, val.trim());
-      } else {
-        localStorage.removeItem(IMGBB_STORAGE_KEY);
-      }
-    } catch {
-      // Ignore storage errors
-    }
-  };
 
   const activeCategoryObj = useMemo(
     () => categories.find((c) => c.name === prodCategory),
@@ -441,15 +390,11 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     setUploadingCatImg(true);
     setErrorBanner('');
     try {
-      const url = await uploadToImgBB(file, browserImgbbKey);
+      const url = await uploadToImgBB(file);
       setCatImage(url);
-      showToast('Category image uploaded via ImgBB.');
+      showToast('Category image uploaded.');
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Image upload failed.';
-      setErrorBanner(msg);
-      if (msg.toLowerCase().includes('imgbb api key')) {
-        setShowImgbbKeyBox(true);
-      }
+      setErrorBanner(err instanceof Error ? err.message : 'Image upload failed.');
     } finally {
       setUploadingCatImg(false);
       e.target.value = '';
@@ -468,6 +413,10 @@ export const AdminPage: React.FC<AdminPageProps> = ({
   const handleSaveCategory = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!catName.trim()) return;
+    if (catImage.trim() && !isValidImageUrl(catImage)) {
+      setErrorBanner('Cover image must be a valid https:// URL or uploaded image.');
+      return;
+    }
     setSavingCat(true);
     setErrorBanner('');
     const now = new Date().toISOString();
@@ -546,17 +495,13 @@ export const AdminPage: React.FC<AdminPageProps> = ({
       const uploadedUrls: string[] = [];
       for (let i = 0; i < files.length; i += 1) {
         setUploadProgressText(`Uploading ${i + 1} of ${files.length}...`);
-        const url = await uploadToImgBB(files[i], browserImgbbKey);
+        const url = await uploadToImgBB(files[i]);
         uploadedUrls.push(url);
       }
       setProdImages((prev) => [...prev, ...uploadedUrls]);
-      showToast(`${uploadedUrls.length} image(s) uploaded to ImgBB.`);
+      showToast(`${uploadedUrls.length} image(s) uploaded successfully.`);
     } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Image upload failed.';
-      setErrorBanner(msg);
-      if (msg.toLowerCase().includes('imgbb api key')) {
-        setShowImgbbKeyBox(true);
-      }
+      setErrorBanner(err instanceof Error ? err.message : 'Image upload failed.');
     } finally {
       setUploadingProdImg(false);
       setUploadProgressText('');
@@ -599,9 +544,14 @@ export const AdminPage: React.FC<AdminPageProps> = ({
   const handleSaveProduct = async (e: React.FormEvent) => {
     e.preventDefault();
     const numericPrice = Number(prodPrice);
-    if (!prodName.trim() || !prodCategory.trim() || !numericPrice || prodImages.length === 0) {
+    const cleanImages = prodImages
+      .map((u) => u.trim().slice(0, 2000))
+      .filter((u) => isValidImageUrl(u))
+      .slice(0, 100);
+
+    if (!prodName.trim() || !prodCategory.trim() || !numericPrice || cleanImages.length === 0) {
       setErrorBanner(
-        'Please enter product name, category, valid price (PKR), and at least 1 product image.'
+        'Please enter product name, category, valid price (PKR), and at least 1 valid uploaded or https:// product image.'
       );
       return;
     }
@@ -611,10 +561,6 @@ export const AdminPage: React.FC<AdminPageProps> = ({
     const now = new Date().toISOString();
     const id = editingProdId || slugifyId(prodName);
     const compareVal = Number(prodComparePrice);
-    const cleanImages = prodImages
-      .map((u) => u.trim().slice(0, 2000))
-      .filter(Boolean)
-      .slice(0, 100);
 
     try {
       await setDoc(doc(db, 'products', id), {
@@ -1230,45 +1176,16 @@ export const AdminPage: React.FC<AdminPageProps> = ({
 
               {/* ImgBB Upload + URL */}
               <div>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="block text-xs font-bold text-[#0E171D] uppercase">
-                    Product Images (ImgBB Upload)
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setShowImgbbKeyBox((v) => !v)}
-                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#118A9B] hover:underline cursor-pointer"
-                  >
-                    <KeyRound className="h-3 w-3" aria-hidden="true" />
-                    <span>
-                      {serverImgbbReady || browserImgbbKey.trim()
-                        ? 'ImgBB Ready'
-                        : 'Set ImgBB Key'}
-                    </span>
-                  </button>
-                </div>
-
-                {(showImgbbKeyBox || (!serverImgbbReady && !browserImgbbKey.trim())) && (
-                  <div className="mt-2 rounded-lg border border-[#DCEBEF] bg-[#F5FAFB] p-2.5">
-                    <label className="block text-[11px] font-semibold text-[#425561]">
-                      ImgBB API Key (saved only in your browser for uploads / GitHub Pages)
-                    </label>
-                    <input
-                      type="password"
-                      value={browserImgbbKey}
-                      onChange={(e) => saveBrowserImgbbKey(e.target.value)}
-                      placeholder="Paste your ImgBB API key..."
-                      className="mt-1 min-h-[34px] w-full rounded-md border border-[#D4E3E7] bg-white px-2.5 text-xs text-[#0E171D]"
-                    />
-                  </div>
-                )}
+                <span className="block text-xs font-bold text-[#0E171D] uppercase">
+                  Product Images
+                </span>
 
                 <label className="mt-2 flex min-h-[44px] cursor-pointer items-center justify-center gap-2 rounded-lg border border-dashed border-[#118A9B] bg-[#EEF9FB] px-4 py-2 text-xs font-bold text-[#118A9B] hover:bg-[#E1F4F8]">
                   <Upload className="h-4 w-4" aria-hidden="true" />
                   <span>
                     {uploadingProdImg
-                      ? uploadProgressText || 'Uploading to ImgBB...'
-                      : 'Upload Multiple Image(s) via ImgBB'}
+                      ? uploadProgressText || 'Uploading image...'
+                      : 'Upload Image(s) from Device'}
                   </span>
                   <input
                     type="file"
@@ -1284,16 +1201,23 @@ export const AdminPage: React.FC<AdminPageProps> = ({
                     type="url"
                     value={prodImgUrlInput}
                     onChange={(e) => setProdImgUrlInput(e.target.value)}
-                    placeholder="Or paste image URL..."
+                    placeholder="Or paste https:// image URL..."
                     className="min-h-[38px] flex-1 rounded-lg border border-[#D4E3E7] bg-[#F5FAFB] px-3 py-1.5 text-xs text-[#0E171D]"
                   />
                   <button
                     type="button"
                     onClick={() => {
-                      if (prodImgUrlInput.trim()) {
-                        setProdImages((prev) => [...prev, prodImgUrlInput.trim()]);
-                        setProdImgUrlInput('');
+                      const val = prodImgUrlInput.trim();
+                      if (!val) return;
+                      if (!isValidImageUrl(val)) {
+                        setErrorBanner(
+                          'Please paste a valid https:// image URL or use the Upload button above.'
+                        );
+                        return;
                       }
+                      setErrorBanner('');
+                      setProdImages((prev) => [...prev, val]);
+                      setProdImgUrlInput('');
                     }}
                     className="rounded-lg border border-[#D4E3E7] bg-white px-3 text-xs font-semibold text-[#0E171D] cursor-pointer"
                   >
@@ -1571,45 +1495,16 @@ export const AdminPage: React.FC<AdminPageProps> = ({
               </div>
 
               <div>
-                <div className="flex items-center justify-between gap-2">
-                  <span className="block text-xs font-bold text-[#0E171D] uppercase">
-                    Cover Image
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setShowImgbbKeyBox((v) => !v)}
-                    className="inline-flex items-center gap-1 text-[11px] font-semibold text-[#118A9B] hover:underline cursor-pointer"
-                  >
-                    <KeyRound className="h-3 w-3" aria-hidden="true" />
-                    <span>
-                      {serverImgbbReady || browserImgbbKey.trim()
-                        ? 'ImgBB Ready'
-                        : 'Set ImgBB Key'}
-                    </span>
-                  </button>
-                </div>
-
-                {(showImgbbKeyBox || (!serverImgbbReady && !browserImgbbKey.trim())) && (
-                  <div className="mt-2 rounded-lg border border-[#DCEBEF] bg-[#F5FAFB] p-2.5">
-                    <label className="block text-[11px] font-semibold text-[#425561]">
-                      ImgBB API Key (saved only in your browser for uploads / GitHub Pages)
-                    </label>
-                    <input
-                      type="password"
-                      value={browserImgbbKey}
-                      onChange={(e) => saveBrowserImgbbKey(e.target.value)}
-                      placeholder="Paste your ImgBB API key..."
-                      className="mt-1 min-h-[34px] w-full rounded-md border border-[#D4E3E7] bg-white px-2.5 text-xs text-[#0E171D]"
-                    />
-                  </div>
-                )}
+                <span className="block text-xs font-bold text-[#0E171D] uppercase">
+                  Cover Image
+                </span>
 
                 <div className="mt-1.5 flex gap-2">
                   <input
                     type="url"
                     value={catImage}
                     onChange={(e) => setCatImage(e.target.value)}
-                    placeholder="Image URL or upload..."
+                    placeholder="https:// image URL or upload..."
                     className="min-h-[40px] flex-1 rounded-lg border border-[#D4E3E7] bg-[#F5FAFB] px-3 py-2 text-xs"
                   />
                   <label className="inline-flex min-h-[40px] cursor-pointer items-center gap-1.5 rounded-lg border border-[#118A9B] bg-[#EEF9FB] px-3 text-xs font-bold text-[#118A9B]">
